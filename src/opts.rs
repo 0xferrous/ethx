@@ -22,14 +22,29 @@ pub enum SafeOperationArg {
 #[group(id = "safe-encoder-opts", requires = "encoder", multiple = true)]
 #[command(next_help_heading = "Encoding options - safe")]
 pub struct SafeEncoderOpts {
-    /// Safe signatures for `execTransaction`, in concatenation order.
+    /// Repeatable EOA Safe signatures. Owners are recovered from the Safe tx hash.
     #[arg(
-        id = "safe-signatures",
-        long = "safe-signatures",
-        value_name = "HEX",
-        value_delimiter = ','
+        id = "safe-eoa-signature",
+        long = "safe-eoa-signature",
+        value_name = "SIG"
     )]
-    pub signatures: Vec<String>,
+    pub eoa_signatures: Vec<String>,
+
+    /// Repeatable EIP-1271 Safe signatures as `<OWNER>:<SIG>`.
+    #[arg(
+        id = "safe-contract-signature",
+        long = "safe-contract-signature",
+        value_name = "OWNER:SIG"
+    )]
+    pub contract_signatures: Vec<String>,
+
+    /// Repeatable Safe approved-hash signers as `<OWNER>`.
+    #[arg(
+        id = "safe-approved-hash",
+        long = "safe-approved-hash",
+        value_name = "OWNER"
+    )]
+    pub approved_hashes: Vec<String>,
 
     /// Safe operation for the inner call.
     #[arg(id = "safe-operation", long = "safe-operation", value_enum)]

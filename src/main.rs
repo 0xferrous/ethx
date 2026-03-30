@@ -4,7 +4,7 @@ pub mod safe;
 
 use crate::{
     call_encoder::{CallEncoder, RawCall},
-    safe::{SafeCallContext, SafeCallEncoder, SafeOperation},
+    safe::{SafeCallContext, SafeCallEncoder, SafeOperation, SafeSignature},
 };
 use alloy_network::{AnyNetwork, EthereumWallet, TransactionBuilder};
 use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
@@ -69,8 +69,13 @@ impl SendTxArgs {
             .unwrap_or_else(Chain::mainnet);
 
         let prepared = self.prepare_call(&provider, ens_chain).await?;
+        let executor = if self.unlocked {
+            self.send_tx.eth.wallet.from
+        } else {
+            signer.as_ref().map(|signer| signer.address())
+        };
         let encoded = self
-            .apply_encoder(prepared, &provider, signer.as_ref())
+            .apply_encoder(prepared, &provider, signer.as_ref(), executor)
             .await?;
         let mut tx = self
             .build_transaction(encoded, &provider, signer.as_ref())
@@ -181,9 +186,9 @@ impl SendTxArgs {
         prepared: PreparedCall,
         provider: &P,
         safe_signer: Option<&WalletSigner>,
+        safe_executor: Option<Address>,
     ) -> Result<PreparedCall> {
         let Some(kind) = self.send_tx.encoder else {
-            self.ensure_no_encoder_opts_used()?;
             return Ok(prepared);
         };
 
@@ -205,7 +210,13 @@ impl SendTxArgs {
             EncoderKind::Safe => {
                 let encoder = SafeCallEncoder::new(target);
                 let ctx = encoder
-                    .prepare_context(&raw, &self.safe_call_context()?, safe_signer, provider)
+                    .prepare_context(
+                        &raw,
+                        &self.safe_call_context()?,
+                        safe_signer,
+                        safe_executor,
+                        provider,
+                    )
                     .await?;
                 encoder.encode_call(raw, &ctx)?
             }
@@ -214,33 +225,29 @@ impl SendTxArgs {
         Ok(PreparedCall::Call(encoded))
     }
 
-    fn ensure_no_encoder_opts_used(&self) -> Result<()> {
-        let safe = &self.send_tx.encoder_opts.safe;
-        let safe_used = !safe.signatures.is_empty()
-            || safe.operation.is_some()
-            || safe.safe_tx_gas.is_some()
-            || safe.base_gas.is_some()
-            || safe.gas_price.is_some()
-            || safe.gas_token.is_some()
-            || safe.refund_receiver.is_some();
-
-        if safe_used {
-            return Err(eyre!(
-                "encoder-specific options were provided without --encoder"
-            ));
-        }
-
-        Ok(())
-    }
-
     fn safe_call_context(&self) -> Result<SafeCallContext> {
         let opts = &self.send_tx.encoder_opts.safe;
 
         let mut signatures = Vec::new();
-        for signature in &opts.signatures {
-            signatures.extend(hex::decode(signature.trim_start_matches("0x"))?);
+        for signature in &opts.eoa_signatures {
+            signatures.push(SafeSignature::Eoa(Bytes::from(hex::decode(
+                signature.trim_start_matches("0x"),
+            )?)));
         }
-        let signatures = Bytes::from(signatures);
+        for signature in &opts.contract_signatures {
+            let (owner, signature) = signature.split_once(':').ok_or_else(|| {
+                eyre!("invalid --safe-contract-signature, expected <OWNER>:<SIG>")
+            })?;
+            signatures.push(SafeSignature::Contract {
+                owner: owner.parse()?,
+                signature: Bytes::from(hex::decode(signature.trim_start_matches("0x"))?),
+            });
+        }
+        for owner in &opts.approved_hashes {
+            signatures.push(SafeSignature::ApprovedHash {
+                owner: owner.parse()?,
+            });
+        }
 
         let operation = match opts.operation.unwrap_or_default() {
             SafeOperationArg::Call => SafeOperation::Call,
@@ -268,6 +275,7 @@ impl SendTxArgs {
             gas_token,
             refund_receiver,
             signatures,
+            encoded_signatures: Bytes::new(),
         })
     }
 
