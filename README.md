@@ -10,6 +10,70 @@ Right now the main implemented command is:
 It also supports wrapping calls through a smart-account encoder, currently:
 - `safe`
 
+## Table of contents
+
+- [Examples](#examples)
+- [Encoder abstraction](#encoder-abstraction)
+- [Status](#status)
+- [Build](#build)
+- [Run](#run)
+- [Safe behavior](#safe-behavior)
+- [Notes](#notes)
+- [Development](#development)
+
+## Examples
+
+### Send a regular transaction
+
+```bash
+ethx send \
+  --rpc-url https://rpc.example \
+  --private-key <KEY> \
+  0xTarget \
+  "transfer(address,uint256)" \
+  0xRecipient \
+  1000000000000000000
+```
+
+### Deploy bytecode
+
+```bash
+ethx send \
+  --rpc-url https://rpc.example \
+  --private-key <KEY> \
+  --create \
+  0x6080...
+```
+
+### Send through a Safe
+
+This uses the encoder abstraction to wrap the inner call into Safe `execTransaction(...)` calldata
+and send the outer transaction to the Safe itself.
+
+```bash
+ethx send \
+  --rpc-url https://rpc.example \
+  --private-key <OWNER_KEY> \
+  --encoder safe \
+  --target 0xSafe \
+  --safe-eoa-signature 0x<owner_sig> \
+  0xInnerTarget \
+  "transfer(address,uint256)" \
+  0xRecipient \
+  1ether
+```
+
+You can also supply other Safe signature forms:
+
+```bash
+--safe-contract-signature 0xOwnerContract:0x<1271_sig>
+--safe-approved-hash 0xOwner
+```
+
+Meaning of addresses:
+- `TO` positional argument: inner call destination
+- `--target`: Safe address
+
 ## Encoder abstraction
 
 `ethx send` can either send a transaction directly, or first pass the requested call through an
@@ -99,59 +163,6 @@ cargo run -- --help
 cargo run -- send --help
 ```
 
-## Examples
-
-### Send a regular transaction
-
-```bash
-ethx send \
-  --rpc-url https://rpc.example \
-  --private-key <KEY> \
-  0xTarget \
-  "transfer(address,uint256)" \
-  0xRecipient \
-  1000000000000000000
-```
-
-### Deploy bytecode
-
-```bash
-ethx send \
-  --rpc-url https://rpc.example \
-  --private-key <KEY> \
-  --create \
-  0x6080...
-```
-
-### Send through a Safe
-
-This uses the encoder abstraction to wrap the inner call into Safe `execTransaction(...)` calldata
-and send the outer transaction to the Safe itself.
-
-```bash
-ethx send \
-  --rpc-url https://rpc.example \
-  --private-key <OWNER_KEY> \
-  --encoder safe \
-  --target 0xSafe \
-  --safe-eoa-signature 0x<owner_sig> \
-  0xInnerTarget \
-  "transfer(address,uint256)" \
-  0xRecipient \
-  1ether
-```
-
-You can also supply other Safe signature forms:
-
-```bash
---safe-contract-signature 0xOwnerContract:0x<1271_sig>
---safe-approved-hash 0xOwner
-```
-
-Meaning of addresses:
-- `TO` positional argument: inner call destination
-- `--target`: Safe address
-
 ## Safe behavior
 
 For the Safe encoder, `ethx` currently:
@@ -187,7 +198,6 @@ Supported today:
 
 Not supported yet:
 - Safe `v == 2` P-256 / RIP-7212-style signatures
-- additional custom Safe signature encodings beyond the forms above
 
 ## Notes
 
