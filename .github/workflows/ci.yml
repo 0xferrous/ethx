@@ -2,7 +2,19 @@ name: CI
 
 on:
   push:
+    paths:
+      - '.github/workflows/ci.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'tests/**'
   pull_request:
+    paths:
+      - '.github/workflows/ci.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'tests/**'
 
 jobs:
   rust:
