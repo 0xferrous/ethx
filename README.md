@@ -10,6 +10,48 @@ Right now the main implemented command is:
 It also supports wrapping calls through a smart-account encoder, currently:
 - `safe`
 
+## Encoder abstraction
+
+`ethx send` can either send a transaction directly, or first pass the requested call through an
+encoder.
+
+Without an encoder:
+- the positional `TO` address is the transaction recipient
+- the parsed `sig + args` become the final calldata
+
+With an encoder:
+- the positional `TO` address is the inner call destination
+- the parsed `sig + args` become the inner calldata
+- `--target` is the outer account/contract that actually receives the transaction
+- the selected encoder transforms that inner call into the outer calldata expected by the target
+
+This is meant to support smart-account style flows where the final onchain transaction is sent to
+an account contract, but still describes some inner call to be executed by that account.
+
+Today the only implemented encoder is `safe`, which wraps the inner call into Safe
+`execTransaction(...)` calldata.
+
+From an implementation perspective, the abstraction is centered on:
+- `RawCall`: a normalized inner call shape (`to`, `value`, `data`)
+- `CallEncoder`: a trait that transforms a `RawCall` into another `RawCall`
+- `CallEncoder::EncodeContext`: encoder-specific extra state needed during encoding
+
+That lets each encoder decide:
+- how the outer calldata should be built
+- whether the outer recipient should differ from the inner recipient
+- what extra preparation/validation is needed before encoding
+
+The Safe implementation uses this to attach Safe-specific context such as:
+- operation mode
+- Safe gas/refund fields
+- structured signature inputs
+- prepared packed signature bytes
+
+The intent is that other smart-account/account-abstraction styles can be added later by:
+- defining their own context type
+- implementing `CallEncoder` for their wrapper format
+- adding CLI parsing/mapping for their encoder-specific options
+
 ## Status
 
 This is an experiment, not a polished replacement for `cast`.
@@ -83,7 +125,8 @@ ethx send \
 
 ### Send through a Safe
 
-This wraps the inner call into Safe `execTransaction(...)` calldata and sends it to the Safe itself.
+This uses the encoder abstraction to wrap the inner call into Safe `execTransaction(...)` calldata
+and send the outer transaction to the Safe itself.
 
 ```bash
 ethx send \
