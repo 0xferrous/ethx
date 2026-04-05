@@ -6,17 +6,14 @@ use crate::{
     call_encoder::{CallEncoder, RawCall},
     safe::{SafeCallContext, SafeCallEncoder, SafeOperation, SafeSignature},
 };
+use alloy_chains::Chain;
 use alloy_network::{AnyNetwork, EthereumWallet, TransactionBuilder};
 use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
-use alloy_provider::{
-    PendingTransactionBuilder, Provider, ProviderBuilder as AlloyProviderBuilder,
-};
+use alloy_provider::{PendingTransactionBuilder, Provider, ProviderBuilder, builder};
 use alloy_signer::Signer;
 use clap::{Parser, Subcommand};
+use ethx_commons::parse_function_args;
 use eyre::{Result, eyre};
-use foundry_cli::utils::parse_function_args;
-use foundry_common::provider::ProviderBuilder;
-use foundry_config::Chain;
 use opts::{EncoderKind, SafeOperationArg, SendTxArgs};
 use std::time::Duration;
 
@@ -52,7 +49,7 @@ impl SendTxArgs {
             .url
             .as_deref()
             .unwrap_or("http://localhost:8545");
-        let provider = ProviderBuilder::<AnyNetwork>::new(rpc).build()?;
+        let provider = builder::<AnyNetwork>().connect_http(rpc.parse()?);
         if let Some(interval) = self.send_tx.poll_interval {
             provider
                 .client()
@@ -60,12 +57,7 @@ impl SendTxArgs {
         }
 
         let signer = self.send_tx.eth.wallet.maybe_signer().await?.0;
-        let ens_chain = self
-            .send_tx
-            .eth
-            .etherscan
-            .chain
-            .unwrap_or_else(Chain::mainnet);
+        let ens_chain = self.send_tx.eth.etherscan.chain.unwrap_or(Chain::mainnet());
 
         let prepared = self.prepare_call(&provider, ens_chain).await?;
         let executor = if self.unlocked {
@@ -110,7 +102,7 @@ impl SendTxArgs {
         tx.set_from(from);
 
         let wallet = EthereumWallet::from(signer);
-        let provider = AlloyProviderBuilder::<_, _, AnyNetwork>::default()
+        let provider = ProviderBuilder::<_, _, AnyNetwork>::default()
             .wallet(wallet)
             .connect_provider(&provider);
 

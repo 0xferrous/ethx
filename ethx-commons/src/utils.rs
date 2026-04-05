@@ -1,10 +1,10 @@
 use crate::{PendingSigner, WalletSigner, error::PrivateKeyError};
-use alloy_primitives::{B256, hex::FromHex};
+use alloy_dyn_abi::DynSolType;
+use alloy_primitives::{B256, U256, hex::FromHex};
 use alloy_signer_ledger::HDPath as LedgerHDPath;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_signer_trezor::HDPath as TrezorHDPath;
-use eyre::{Context, Result};
-use foundry_config::Config;
+use eyre::{Context, ContextCompat, Result};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -98,7 +98,8 @@ pub fn maybe_get_keystore_path(
     maybe_path: Option<&str>,
     maybe_name: Option<&str>,
 ) -> Result<Option<PathBuf>> {
-    let default_keystore_dir = Config::foundry_keystores_dir()
+    let default_keystore_dir = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".foundry").join("keystores"))
         .ok_or_else(|| eyre::eyre!("Could not find the default keystore directory."))?;
     Ok(maybe_path
         .map(PathBuf::from)
@@ -158,15 +159,40 @@ pub fn create_keystore_signer(
     }
 }
 
+/// Parses an ether-denominated value from a CLI string.
+///
+/// Untagged values are interpreted as wei. Hex values with a `0x` prefix are
+/// interpreted as raw integers.
+pub fn parse_ether_value(value: &str) -> Result<U256> {
+    Ok(if value.starts_with("0x") {
+        U256::from_str_radix(value.trim_start_matches("0x"), 16)?
+    } else {
+        DynSolType::coerce_str(&DynSolType::Uint(256), value)?
+            .as_uint()
+            .wrap_err("Could not parse ether value from string")?
+            .0
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn parse_private_key_signer() {
-        let pk = B256::random();
+        let pk = B256::repeat_byte(0x42);
         let pk_str = pk.to_string();
         assert!(create_private_key_signer(&pk_str).is_ok());
         assert!(create_private_key_signer(&pk_str[2..]).is_ok());
+    }
+
+    #[test]
+    fn parse_ether_value_works() {
+        assert_eq!(parse_ether_value("0x10").unwrap(), U256::from(16));
+        assert_eq!(parse_ether_value("100").unwrap(), U256::from(100));
+        assert_eq!(
+            parse_ether_value("1gwei").unwrap(),
+            U256::from(1_000_000_000u64)
+        );
     }
 }
