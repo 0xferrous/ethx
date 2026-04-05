@@ -17,7 +17,6 @@ use eyre::{Result, eyre};
 use foundry_cli::utils::parse_function_args;
 use foundry_common::provider::ProviderBuilder;
 use foundry_config::Chain;
-use foundry_wallets::WalletSigner;
 use opts::{EncoderKind, SafeOperationArg, SendTxArgs};
 use std::time::Duration;
 
@@ -181,13 +180,17 @@ impl SendTxArgs {
         Ok(PreparedCall::Call(RawCall { to, value, data }))
     }
 
-    async fn apply_encoder<P: Provider<AnyNetwork>>(
+    async fn apply_encoder<P, S>(
         &self,
         prepared: PreparedCall,
         provider: &P,
-        safe_signer: Option<&WalletSigner>,
+        safe_signer: Option<&S>,
         safe_executor: Option<Address>,
-    ) -> Result<PreparedCall> {
+    ) -> Result<PreparedCall>
+    where
+        P: Provider<AnyNetwork>,
+        S: Signer,
+    {
         let Some(kind) = self.send_tx.encoder else {
             return Ok(prepared);
         };
@@ -279,12 +282,16 @@ impl SendTxArgs {
         })
     }
 
-    async fn build_transaction<P: Provider<AnyNetwork>>(
+    async fn build_transaction<P, S>(
         &self,
         prepared: PreparedCall,
         provider: &P,
-        signer: Option<&foundry_wallets::WalletSigner>,
-    ) -> Result<<AnyNetwork as alloy_network::Network>::TransactionRequest> {
+        signer: Option<&S>,
+    ) -> Result<<AnyNetwork as alloy_network::Network>::TransactionRequest>
+    where
+        P: Provider<AnyNetwork>,
+        S: Signer,
+    {
         let legacy = self.tx.legacy;
         let mut tx = <AnyNetwork as alloy_network::Network>::TransactionRequest::default();
         self.tx.apply::<AnyNetwork>(&mut tx, legacy);

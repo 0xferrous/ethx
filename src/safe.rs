@@ -4,7 +4,6 @@ use alloy_primitives::{Address, B256, Bytes, FixedBytes, Signature, U256};
 use alloy_provider::Provider;
 use alloy_signer::Signer;
 use alloy_sol_types::{Eip712Domain, SolCall, SolStruct, SolType, sol};
-use foundry_wallets::WalletSigner;
 use std::collections::BTreeSet;
 use thiserror::Error;
 
@@ -387,14 +386,18 @@ impl SafeCallEncoder {
 
     /// Resolves the Safe transaction hash for the provided call/context and sorts signature inputs
     /// by owner address as required by Safe.
-    pub async fn prepare_context<P: Provider<AnyNetwork>>(
+    pub async fn prepare_context<P, S>(
         &self,
         call: &RawCall,
         context: &SafeCallContext,
-        signer: Option<&WalletSigner>,
+        signer: Option<&S>,
         executor: Option<Address>,
         provider: &P,
-    ) -> eyre::Result<SafeCallContext> {
+    ) -> eyre::Result<SafeCallContext>
+    where
+        P: Provider<AnyNetwork>,
+        S: Signer,
+    {
         let (version, nonce, threshold, owners) = self.load_metadata(provider).await?;
         let owner_set: BTreeSet<_> = owners.into_iter().collect();
         let chain_id = provider.get_chain_id().await?;

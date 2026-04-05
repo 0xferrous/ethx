@@ -1,8 +1,6 @@
 use clap::{Args, Parser, ValueEnum, ValueHint};
-use foundry_cli::{
-    opts::{EthereumOpts, TransactionOpts},
-    utils::parse_ether_value,
-};
+use ethx_commons::EthereumOpts;
+use foundry_cli::{opts::TransactionOpts, utils::parse_ether_value};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
