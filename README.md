@@ -10,6 +10,9 @@ Right now the main implemented command is:
 It also supports wrapping calls through a smart-account encoder, currently:
 - `safe`
 
+Additional Safe convenience commands include:
+- `ethx safe execute-deployment` — execute CALL transactions from a Foundry broadcast JSON through a Safe
+
 ## Table of contents
 
 - [Examples](#examples)
@@ -44,6 +47,23 @@ ethx send \
   --create \
   0x6080...
 ```
+
+### Execute a Foundry broadcast JSON through a Safe
+
+```bash
+ethx safe execute-deployment \
+  --rpc-url https://rpc.example \
+  --private-key <OWNER_KEY> \
+  --safe 0xSafe \
+  broadcast/MyScript.s.sol/1/run-latest.json
+```
+
+If the JSON contains one CALL transaction, `ethx` executes it directly through the Safe. If it
+contains multiple CALL transactions, `ethx` batches them with Safe MultiSend and executes the
+MultiSend call via `DELEGATECALL`. Contract deployment transactions (`CREATE`/`CREATE2`) are not
+supported by this command.
+
+Use `--multi-send <ADDRESS>` to override the default canonical MultiSend address.
 
 ### Send through a Safe
 
@@ -121,6 +141,7 @@ The intent is that other smart-account/account-abstraction styles can be added l
 This is an experiment, not a polished replacement for `cast`.
 
 Implemented today:
+- Foundry broadcast JSON CALL execution through Safe, with MultiSend batching for multiple calls
 - Foundry-style function signature + args parsing via `foundry_cli::utils::parse_function_args`
 - Foundry wallet resolution via `foundry-wallets`
 - regular call sending

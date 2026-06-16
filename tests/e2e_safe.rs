@@ -7,7 +7,7 @@ use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer::Signer;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{Eip712Domain, SolCall, SolStruct, sol};
-use std::{fs, process::Command};
+use std::{fs, process::Command, time::SystemTime};
 
 sol! {
     #[sol(rpc)]
@@ -117,6 +117,21 @@ fn always_valid_1271_runtime() -> Bytes {
     )
 }
 
+/// Runtime for a compact test MultiSend-compatible contract.
+///
+/// The bytecode was compiled from a minimal Solidity contract that implements
+/// `multiSend(bytes)` over Safe's packed transaction format. It is installed at the canonical
+/// MultiSend address on Anvil via `anvil_setCode`, so the e2e test does not depend on external
+/// deployments.
+fn test_multisend_runtime() -> Bytes {
+    Bytes::from(
+        hex::decode(
+            "60806040526004361061001d575f3560e01c80638d80ff0a14610021575b5f5ffd5b61003b600480360381019061003691906103f0565b61003d565b005b5f5f90505b815181101561029f575f5f5f5f846020870101805160f81c9450600181015160601c93506015810151925060358101519150505f8167ffffffffffffffff8111156100905761008f6102cc565b5b6040519080825280601f01601f1916602001820160405280156100c25781602001600182028036833780820191505090505b5090505f5f90505b828110156101555787816055896100e1919061046d565b6100eb919061046d565b815181106100fc576100fb6104a0565b5b602001015160f81c60f81b82828151811061011a576101196104a0565b5b60200101907effffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff191690815f1a90535080806001019150506100ca565b505f5f8660ff16036101d1578473ffffffffffffffffffffffffffffffffffffffff168483604051610187919061051f565b5f6040518083038185875af1925050503d805f81146101c1576040519150601f19603f3d011682016040523d82523d5f602084013e6101c6565b606091505b50508091505061023a565b8473ffffffffffffffffffffffffffffffffffffffff16826040516101f6919061051f565b5f60405180830381855af49150503d805f811461022e576040519150601f19603f3d011682016040523d82523d5f602084013e610233565b606091505b5050809150505b8061027a576040517f08c379a00000000000000000000000000000000000000000000000000000000081526004016102719061058f565b60405180910390fd5b826055610287919061046d565b87610292919061046d565b9650505050505050610042565b5050565b5f604051905090565b5f5ffd5b5f5ffd5b5f5ffd5b5f5ffd5b5f601f19601f8301169050919050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52604160045260245ffd5b610302826102bc565b810181811067ffffffffffffffff82111715610321576103206102cc565b5b80604052505050565b5f6103336102a3565b905061033f82826102f9565b919050565b5f67ffffffffffffffff82111561035e5761035d6102cc565b5b610367826102bc565b9050602081019050919050565b828183375f83830152505050565b5f61039461038f84610344565b61032a565b9050828152602081018484840111156103b0576103af6102b8565b5b6103bb848285610374565b509392505050565b5f82601f8301126103d7576103d66102b4565b5b81356103e7848260208601610382565b91505092915050565b5f60208284031215610405576104046102ac565b5b5f82013567ffffffffffffffff811115610422576104216102b0565b5b61042e848285016103c3565b91505092915050565b5f819050919050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52601160045260245ffd5b5f61047782610437565b915061048283610437565b925082820190508082111561049a57610499610440565b5b92915050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52603260045260245ffd5b5f81519050919050565b5f81905092915050565b8281835e5f83830152505050565b5f6104f9826104cd565b61050381856104d7565b93506105138185602086016104e1565b80840191505092915050565b5f61052a82846104ef565b915081905092915050565b5f82825260208201905092915050565b7f63616c6c206661696c65640000000000000000000000000000000000000000005f82015250565b5f610579600b83610535565b915061058482610545565b602082019050919050565b5f6020820190508181035f8301526105a68161056d565b905091905056fea26469706673582212203412aaf17eebc1c21f895ea30c54545f279895b6e60a1f0714d84ed933f6133c64736f6c63430008210033"
+        )
+        .unwrap(),
+    )
+}
+
 /// Recomputes the Safe transaction hash for the exact transaction shape used in this test.
 ///
 /// This mirrors the production encoder logic so the test can pre-approve hashes and pre-sign EOA
@@ -199,6 +214,97 @@ fn run_ethx(args: &[String]) {
         .status()
         .expect("failed to run ethx");
     assert!(status.success(), "ethx command failed: {args:?}");
+}
+
+fn write_broadcast_json(transactions: &[(Address, U256)]) -> std::path::PathBuf {
+    let txs = transactions
+        .iter()
+        .map(|(to, value)| {
+            serde_json::json!({
+                "transactionType": "CALL",
+                "transaction": {
+                    "to": format!("{to:#x}"),
+                    "value": format!("{value:#x}"),
+                    "input": "0x"
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let json = serde_json::json!({ "transactions": txs });
+    let unique = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("ethx-broadcast-{unique}.json"));
+    fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn safe_execute_deployment_runs_single_and_batched_foundry_calls() {
+    let anvil = Anvil::new().spawn();
+    let provider = ProviderBuilder::new().connect_http(anvil.endpoint_url());
+    let accounts = anvil.addresses();
+    let owner = accounts[0];
+    let recipient1 = accounts[7];
+    let recipient2 = accounts[8];
+    let recipient3 = accounts[9];
+    let multi_send = address!("38869bf66a61cf6bdb996a6ae40d5853fd43b526");
+
+    provider
+        .client()
+        .request::<_, ()>("anvil_setCode", (multi_send, test_multisend_runtime()))
+        .await
+        .unwrap();
+
+    let singleton = deploy_contract(&provider, owner, safe_v141_creation_code()).await;
+    let safe = deploy_safe_proxy(&provider, owner, singleton, vec![owner], 1).await;
+    send_value(&provider, owner, safe, U256::from(10u64.pow(18))).await;
+
+    let key = anvil.keys()[0].to_bytes();
+    let rpc = anvil.endpoint();
+
+    let single_path = write_broadcast_json(&[(recipient1, U256::from(3))]);
+    let before = provider.get_balance(recipient1).await.unwrap();
+    run_ethx(&[
+        "safe".into(),
+        "execute-deployment".into(),
+        "--rpc-url".into(),
+        rpc.clone(),
+        "--private-key".into(),
+        hex::encode(key),
+        "--safe".into(),
+        format!("{safe:#x}"),
+        single_path.display().to_string(),
+    ]);
+    assert_eq!(
+        provider.get_balance(recipient1).await.unwrap(),
+        before + U256::from(3)
+    );
+
+    let batch_path =
+        write_broadcast_json(&[(recipient2, U256::from(4)), (recipient3, U256::from(5))]);
+    let before2 = provider.get_balance(recipient2).await.unwrap();
+    let before3 = provider.get_balance(recipient3).await.unwrap();
+    run_ethx(&[
+        "safe".into(),
+        "execute-deployment".into(),
+        "--rpc-url".into(),
+        rpc,
+        "--private-key".into(),
+        hex::encode(key),
+        "--safe".into(),
+        format!("{safe:#x}"),
+        batch_path.display().to_string(),
+    ]);
+    assert_eq!(
+        provider.get_balance(recipient2).await.unwrap(),
+        before2 + U256::from(4)
+    );
+    assert_eq!(
+        provider.get_balance(recipient3).await.unwrap(),
+        before3 + U256::from(5)
+    );
 }
 
 #[tokio::test]

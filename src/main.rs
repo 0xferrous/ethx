@@ -1,4 +1,6 @@
 pub mod call_encoder;
+pub mod foundry_broadcast;
+pub mod multisend;
 mod opts;
 pub mod safe;
 
@@ -14,7 +16,10 @@ use alloy_signer::Signer;
 use clap::{Parser, Subcommand};
 use ethx_commons::parse_function_args;
 use eyre::{Result, eyre};
-use opts::{EncoderKind, SafeOperationArg, SendTxArgs};
+use opts::{
+    EncoderKind, ExecuteDeploymentArgs, SafeEncoderOpts, SafeOperationArg, SafeSubcommands,
+    SendTxArgs,
+};
 use std::time::Duration;
 
 #[derive(Debug, Parser)]
@@ -32,6 +37,11 @@ struct Cli {
 enum Commands {
     /// Send a transaction with a cast-like interface.
     Send(SendTxArgs),
+    /// Safe convenience commands.
+    Safe {
+        #[command(subcommand)]
+        command: SafeSubcommands,
+    },
 }
 
 #[derive(Debug)]
@@ -40,28 +50,87 @@ enum PreparedCall {
     Create { code: Bytes },
 }
 
+fn safe_call_context_from_opts(opts: &SafeEncoderOpts) -> Result<SafeCallContext> {
+    let mut signatures = Vec::new();
+    for signature in &opts.eoa_signatures {
+        signatures.push(SafeSignature::Eoa(Bytes::from(hex::decode(
+            signature.trim_start_matches("0x"),
+        )?)));
+    }
+    for signature in &opts.contract_signatures {
+        let (owner, signature) = signature
+            .split_once(':')
+            .ok_or_else(|| eyre!("invalid --safe-contract-signature, expected <OWNER>:<SIG>"))?;
+        signatures.push(SafeSignature::Contract {
+            owner: owner.parse()?,
+            signature: Bytes::from(hex::decode(signature.trim_start_matches("0x"))?),
+        });
+    }
+    for owner in &opts.approved_hashes {
+        signatures.push(SafeSignature::ApprovedHash {
+            owner: owner.parse()?,
+        });
+    }
+
+    let operation = match opts.operation.unwrap_or_default() {
+        SafeOperationArg::Call => SafeOperation::Call,
+        SafeOperationArg::DelegateCall => SafeOperation::DelegateCall,
+    };
+
+    let gas_token = opts
+        .gas_token
+        .as_deref()
+        .map(str::parse)
+        .transpose()?
+        .unwrap_or(Address::ZERO);
+    let refund_receiver = opts
+        .refund_receiver
+        .as_deref()
+        .map(str::parse)
+        .transpose()?
+        .unwrap_or(Address::ZERO);
+
+    Ok(SafeCallContext {
+        operation,
+        safe_tx_gas: opts.safe_tx_gas.map(U256::from).unwrap_or(U256::ZERO),
+        base_gas: opts.base_gas.map(U256::from).unwrap_or(U256::ZERO),
+        gas_price: opts.gas_price.unwrap_or(U256::ZERO),
+        gas_token,
+        refund_receiver,
+        signatures,
+        encoded_signatures: Bytes::new(),
+    })
+}
+
 impl SendTxArgs {
     async fn run(self) -> Result<()> {
         let rpc = self
             .send_tx
+            .submission
             .eth
             .rpc
             .url
             .as_deref()
             .unwrap_or("http://localhost:8545");
         let provider = builder::<AnyNetwork>().connect_http(rpc.parse()?);
-        if let Some(interval) = self.send_tx.poll_interval {
+        if let Some(interval) = self.send_tx.submission.poll_interval {
             provider
                 .client()
                 .set_poll_interval(Duration::from_secs(interval));
         }
 
-        let signer = self.send_tx.eth.wallet.maybe_signer().await?.0;
-        let ens_chain = self.send_tx.eth.etherscan.chain.unwrap_or(Chain::mainnet());
+        let signer = self.send_tx.submission.eth.wallet.maybe_signer().await?.0;
+        let ens_chain = self
+            .send_tx
+            .submission
+            .eth
+            .etherscan
+            .chain
+            .unwrap_or(Chain::mainnet());
 
         let prepared = self.prepare_call(&provider, ens_chain).await?;
         let executor = if self.unlocked {
-            self.send_tx.eth.wallet.from
+            self.send_tx.submission.eth.wallet.from
         } else {
             signer.as_ref().map(|signer| signer.address())
         };
@@ -75,6 +144,7 @@ impl SendTxArgs {
         if self.unlocked {
             let from = self
                 .send_tx
+                .submission
                 .eth
                 .wallet
                 .from
@@ -91,7 +161,7 @@ impl SendTxArgs {
             )
         })?;
         let from = signer.address();
-        if let Some(specified_from) = self.send_tx.eth.wallet.from
+        if let Some(specified_from) = self.send_tx.submission.eth.wallet.from
             && specified_from != from
         {
             return Err(eyre!(
@@ -130,7 +200,7 @@ impl SendTxArgs {
                     None,
                     ens_chain,
                     provider,
-                    self.send_tx.eth.etherscan.key.as_deref(),
+                    self.send_tx.submission.eth.etherscan.key.as_deref(),
                 )
                 .await?
                 .0;
@@ -160,7 +230,7 @@ impl SendTxArgs {
                     Some(to),
                     ens_chain,
                     provider,
-                    self.send_tx.eth.etherscan.key.as_deref(),
+                    self.send_tx.submission.eth.etherscan.key.as_deref(),
                 )
                 .await?
                 .0,
@@ -221,57 +291,7 @@ impl SendTxArgs {
     }
 
     fn safe_call_context(&self) -> Result<SafeCallContext> {
-        let opts = &self.send_tx.encoder_opts.safe;
-
-        let mut signatures = Vec::new();
-        for signature in &opts.eoa_signatures {
-            signatures.push(SafeSignature::Eoa(Bytes::from(hex::decode(
-                signature.trim_start_matches("0x"),
-            )?)));
-        }
-        for signature in &opts.contract_signatures {
-            let (owner, signature) = signature.split_once(':').ok_or_else(|| {
-                eyre!("invalid --safe-contract-signature, expected <OWNER>:<SIG>")
-            })?;
-            signatures.push(SafeSignature::Contract {
-                owner: owner.parse()?,
-                signature: Bytes::from(hex::decode(signature.trim_start_matches("0x"))?),
-            });
-        }
-        for owner in &opts.approved_hashes {
-            signatures.push(SafeSignature::ApprovedHash {
-                owner: owner.parse()?,
-            });
-        }
-
-        let operation = match opts.operation.unwrap_or_default() {
-            SafeOperationArg::Call => SafeOperation::Call,
-            SafeOperationArg::DelegateCall => SafeOperation::DelegateCall,
-        };
-
-        let gas_token = opts
-            .gas_token
-            .as_deref()
-            .map(str::parse)
-            .transpose()?
-            .unwrap_or(Address::ZERO);
-        let refund_receiver = opts
-            .refund_receiver
-            .as_deref()
-            .map(str::parse)
-            .transpose()?
-            .unwrap_or(Address::ZERO);
-
-        Ok(SafeCallContext {
-            operation,
-            safe_tx_gas: opts.safe_tx_gas.map(U256::from).unwrap_or(U256::ZERO),
-            base_gas: opts.base_gas.map(U256::from).unwrap_or(U256::ZERO),
-            gas_price: opts.gas_price.unwrap_or(U256::ZERO),
-            gas_token,
-            refund_receiver,
-            signatures,
-            encoded_signatures: Bytes::new(),
-        })
+        safe_call_context_from_opts(&self.send_tx.encoder_opts.safe)
     }
 
     async fn build_transaction<P, S>(
@@ -301,7 +321,7 @@ impl SendTxArgs {
             }
         }
 
-        let from = if let Some(from) = self.send_tx.eth.wallet.from {
+        let from = if let Some(from) = self.send_tx.submission.eth.wallet.from {
             from
         } else if let Some(signer) = signer {
             signer.address()
@@ -341,14 +361,143 @@ impl SendTxArgs {
 
     async fn handle_pending(&self, pending: PendingTransactionBuilder<AnyNetwork>) -> Result<()> {
         let tx_hash = *pending.inner().tx_hash();
-        if self.send_tx.cast_async {
+        if self.send_tx.submission.cast_async {
             println!("{tx_hash:#x}");
             return Ok(());
         }
 
         let receipt = pending
-            .with_required_confirmations(self.send_tx.confirmations)
-            .with_timeout(self.send_tx.timeout.map(Duration::from_secs))
+            .with_required_confirmations(self.send_tx.submission.confirmations)
+            .with_timeout(self.send_tx.submission.timeout.map(Duration::from_secs))
+            .get_receipt()
+            .await?;
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+        Ok(())
+    }
+}
+
+impl ExecuteDeploymentArgs {
+    async fn run(self) -> Result<()> {
+        let rpc = self
+            .submission
+            .eth
+            .rpc
+            .url
+            .as_deref()
+            .unwrap_or("http://localhost:8545");
+        let provider = builder::<AnyNetwork>().connect_http(rpc.parse()?);
+        if let Some(interval) = self.submission.poll_interval {
+            provider
+                .client()
+                .set_poll_interval(Duration::from_secs(interval));
+        }
+
+        let signer = self.submission.eth.wallet.signer().await?;
+        let signer_address = signer.address();
+        if let Some(specified_from) = self.submission.eth.wallet.from
+            && specified_from != signer_address
+        {
+            return Err(eyre!(
+                "The specified sender via --from does not match the resolved signer address"
+            ));
+        }
+
+        let calls = foundry_broadcast::load_calls(&self.path)?;
+        let safe = self.safe.parse::<Address>()?;
+        let is_batch = calls.len() > 1;
+        let inner_call = if is_batch {
+            let multi_send = self.multi_send.parse::<Address>()?;
+            multisend::multisend_call(&calls, multi_send)
+        } else {
+            calls
+                .into_iter()
+                .next()
+                .expect("non-empty calls checked above")
+        };
+
+        let mut safe_context = safe_call_context_from_opts(&self.safe_opts)?;
+        safe_context.operation = if is_batch {
+            SafeOperation::DelegateCall
+        } else {
+            SafeOperation::Call
+        };
+
+        let encoder = SafeCallEncoder::new(safe);
+        let ctx = encoder
+            .prepare_context(
+                &inner_call,
+                &safe_context,
+                Some(&signer),
+                Some(signer_address),
+                &provider,
+            )
+            .await?;
+        let encoded = encoder.encode_call(inner_call, &ctx)?;
+        let mut tx = self
+            .build_transaction(encoded, &provider, signer_address)
+            .await?;
+        tx.set_from(signer_address);
+
+        let wallet = EthereumWallet::from(signer);
+        let provider = ProviderBuilder::<_, _, AnyNetwork>::default()
+            .wallet(wallet)
+            .connect_provider(&provider);
+
+        let pending = provider.send_transaction(tx).await?;
+        self.handle_pending(pending).await
+    }
+
+    async fn build_transaction<P: Provider<AnyNetwork>>(
+        &self,
+        call: RawCall,
+        provider: &P,
+        from: Address,
+    ) -> Result<<AnyNetwork as alloy_network::Network>::TransactionRequest> {
+        let legacy = self.tx.legacy;
+        let mut tx = <AnyNetwork as alloy_network::Network>::TransactionRequest::default();
+        self.tx.apply::<AnyNetwork>(&mut tx, legacy);
+        tx.set_to(call.to);
+        tx.set_input(call.data);
+        tx.set_value(call.value);
+        tx.set_from(from);
+
+        if tx.chain_id().is_none() {
+            tx.set_chain_id(provider.get_chain_id().await?);
+        }
+        if tx.nonce().is_none() {
+            tx.set_nonce(provider.get_transaction_count(from).await?);
+        }
+        if legacy {
+            if tx.gas_price().is_none() {
+                tx.set_gas_price(provider.get_gas_price().await?);
+            }
+        } else if tx.max_fee_per_gas().is_none() || tx.max_priority_fee_per_gas().is_none() {
+            let fees = provider.estimate_eip1559_fees().await?;
+            if tx.max_fee_per_gas().is_none() {
+                tx.set_max_fee_per_gas(fees.max_fee_per_gas);
+            }
+            if tx.max_priority_fee_per_gas().is_none() {
+                tx.set_max_priority_fee_per_gas(fees.max_priority_fee_per_gas);
+            }
+        }
+        if tx.gas_limit().is_none() {
+            let gas = provider.estimate_gas(tx.clone()).await?;
+            tx.set_gas_limit(gas);
+        }
+
+        Ok(tx)
+    }
+
+    async fn handle_pending(&self, pending: PendingTransactionBuilder<AnyNetwork>) -> Result<()> {
+        let tx_hash = *pending.inner().tx_hash();
+        if self.submission.cast_async {
+            println!("{tx_hash:#x}");
+            return Ok(());
+        }
+
+        let receipt = pending
+            .with_required_confirmations(self.submission.confirmations)
+            .with_timeout(self.submission.timeout.map(Duration::from_secs))
             .get_receipt()
             .await?;
         println!("{}", serde_json::to_string_pretty(&receipt)?);
@@ -362,5 +511,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Send(args) => args.run().await,
+        Commands::Safe { command } => match command {
+            SafeSubcommands::ExecuteDeployment(args) => args.run().await,
+        },
     }
 }

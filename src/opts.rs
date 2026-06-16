@@ -3,6 +3,9 @@ use ethx_commons::utils::parse_ether_value;
 use ethx_commons::{EthereumOpts, TransactionOpts};
 use std::path::PathBuf;
 
+/// Default canonical Safe MultiSend address used when no override is provided.
+pub const DEFAULT_SAFE_MULTISEND: &str = "0x38869bf66a61cF6bDB996A6aE40D5853Fd43B526";
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum EncoderKind {
     #[default]
@@ -17,7 +20,6 @@ pub enum SafeOperationArg {
 }
 
 #[derive(Debug, Clone, Default, Args)]
-#[group(id = "safe-encoder-opts", requires = "encoder", multiple = true)]
 #[command(next_help_heading = "Encoding options - safe")]
 pub struct SafeEncoderOpts {
     /// Repeatable EOA Safe signatures. Owners are recovered from the Safe tx hash.
@@ -74,13 +76,14 @@ pub struct SafeEncoderOpts {
 }
 
 #[derive(Debug, Clone, Default, Args)]
+#[group(id = "safe-encoder-opts", requires = "encoder", multiple = true)]
 pub struct EncoderContextOpts {
     #[command(flatten)]
     pub safe: SafeEncoderOpts,
 }
 
 #[derive(Debug, Clone, Parser)]
-pub struct SendTxOpts {
+pub struct SubmissionOpts {
     /// Only print the transaction hash and exit immediately.
     #[arg(id = "async", long = "async", alias = "cast-async", env = "CAST_ASYNC")]
     pub cast_async: bool,
@@ -101,6 +104,15 @@ pub struct SendTxOpts {
     #[arg(long, alias = "poll-interval", env = "ETH_POLL_INTERVAL")]
     pub poll_interval: Option<u64>,
 
+    #[command(flatten)]
+    pub eth: EthereumOpts,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct SendTxOpts {
+    #[command(flatten)]
+    pub submission: SubmissionOpts,
+
     /// Wrap the call using a supported encoder.
     #[arg(long, value_enum, help_heading = "Encoding options")]
     pub encoder: Option<EncoderKind>,
@@ -111,9 +123,6 @@ pub struct SendTxOpts {
 
     #[command(flatten)]
     pub encoder_opts: EncoderContextOpts,
-
-    #[command(flatten)]
-    pub eth: EthereumOpts,
 }
 
 #[derive(Debug, Parser)]
@@ -131,6 +140,37 @@ pub enum SendTxSubcommands {
         #[arg(allow_negative_numbers = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, Parser)]
+pub enum SafeSubcommands {
+    /// Execute a Foundry broadcast/deployment JSON through a Safe.
+    #[command(name = "execute-deployment")]
+    ExecuteDeployment(ExecuteDeploymentArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct ExecuteDeploymentArgs {
+    /// Path to a Foundry broadcast/deployment JSON file, e.g. run-latest.json.
+    #[arg(value_hint = ValueHint::FilePath)]
+    pub path: PathBuf,
+
+    /// Safe address that should execute the recorded call(s).
+    #[arg(long, value_name = "ADDRESS")]
+    pub safe: String,
+
+    /// MultiSend contract address used when the file contains more than one call.
+    #[arg(long, value_name = "ADDRESS", default_value = DEFAULT_SAFE_MULTISEND)]
+    pub multi_send: String,
+
+    #[command(flatten)]
+    pub safe_opts: SafeEncoderOpts,
+
+    #[command(flatten)]
+    pub submission: SubmissionOpts,
+
+    #[command(flatten)]
+    pub tx: TransactionOpts,
 }
 
 #[derive(Debug, Parser)]
