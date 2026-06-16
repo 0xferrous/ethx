@@ -1,38 +1,28 @@
-//! Shared wallet and Ethereum CLI support types for `ethx`.
+//! Shared Ethereum CLI support types for `ethx`.
 //!
-//! This crate mirrors the wallet-facing API shape previously consumed from
-//! Foundry so `ethx` can migrate away incrementally while preserving its CLI.
+//! Wallet parsing and signer resolution are re-exported from `foundry-wallets`; this crate keeps
+//! the remaining `ethx`-specific ABI, RPC/explorer, and transaction option helpers in one place.
 
 /// ABI and calldata parsing helpers.
 pub mod abi;
-/// Error types for wallet parsing and signer construction.
-pub mod error;
 /// Ethereum CLI option wrappers composed from RPC, explorer, and wallet options.
 pub mod ethereum;
-/// Top-level wallet CLI options and signer resolution helpers.
-pub mod opts;
-/// Signer abstractions and signer-related helpers.
-pub mod signer;
-/// Tempo-related compatibility types.
-pub mod tempo;
 /// Transaction option types used by `ethx`.
 pub mod tx;
-/// Utility functions for wallet loading and signer creation.
+/// Small CLI parsing utilities that are not provided by `foundry-wallets`.
 pub mod utils;
-/// Raw wallet CLI options such as private keys and mnemonics.
-pub mod wallet_raw;
 
 /// ABI and calldata parsing helpers.
 pub use abi::parse_function_args;
 /// Combined Ethereum CLI options used by `ethx`.
 pub use ethereum::{EthereumOpts, EtherscanOpts, RpcOpts};
-/// Wallet CLI options and signer resolution entrypoints.
-pub use opts::WalletOpts;
+/// Tempo access-key configuration compatibility type from `foundry-wallets`.
+pub use foundry_wallets::MaybeTempoConfig as TempoAccessKeyConfig;
+/// Raw wallet CLI options used by [`WalletOpts`].
+pub use foundry_wallets::RawWalletOpts;
+/// Wallet CLI options and signer resolution entrypoints provided by `foundry-wallets`.
+pub use foundry_wallets::WalletOpts;
 /// Signers that require deferred user interaction and the resolved signer type.
-pub use signer::{PendingSigner, WalletSigner};
-/// Tempo access-key configuration placeholder used for compatibility.
-pub use tempo::TempoAccessKeyConfig;
+pub use foundry_wallets::{PendingSigner, WalletSigner};
 /// Transaction options and authorization-list helpers.
 pub use tx::{CliAuthorizationList, TransactionOpts};
-/// Raw wallet CLI options used by [`WalletOpts`].
-pub use wallet_raw::RawWalletOpts;
