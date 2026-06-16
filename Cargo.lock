@@ -501,9 +501,11 @@ version = "2.0.0-rc.0"
 source = "git+https://github.com/alloy-rs/alloy?rev=100a3325ac4d624f3eb0bd404125750e76edf8ca#100a3325ac4d624f3eb0bd404125750e76edf8ca"
 dependencies = [
  "alloy-consensus",
+ "alloy-dyn-abi",
  "alloy-network",
  "alloy-primitives",
  "alloy-signer",
+ "alloy-sol-types",
  "async-trait",
  "coins-ledger",
  "futures-util",
@@ -1868,6 +1870,8 @@ dependencies = [
  "clap",
  "ethx-commons",
  "eyre",
+ "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",

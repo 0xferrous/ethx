@@ -147,10 +147,93 @@ pub enum SafeSubcommands {
     /// Execute a Foundry broadcast/deployment JSON through a Safe.
     #[command(name = "execute-deployment")]
     ExecuteDeployment(ExecuteDeploymentArgs),
+
+    /// Sign and queue a single call in the Safe Transaction Service.
+    #[command(name = "queue")]
+    Queue(QueueArgs),
+
+    /// Sign and queue a Foundry broadcast/deployment JSON in the Safe Transaction Service.
+    #[command(name = "queue-deployment")]
+    QueueDeployment(QueueDeploymentArgs),
 }
 
 #[derive(Debug, Parser)]
 pub struct ExecuteDeploymentArgs {
+    #[command(flatten)]
+    pub deployment: SafeDeploymentOpts,
+
+    #[command(flatten)]
+    pub safe_opts: SafeEncoderOpts,
+
+    #[command(flatten)]
+    pub submission: SubmissionOpts,
+
+    #[command(flatten)]
+    pub tx: TransactionOpts,
+}
+
+#[derive(Debug, Parser)]
+pub struct QueueArgs {
+    /// The inner destination the Safe should call.
+    pub to: String,
+
+    /// The signature of the function to call.
+    pub sig: Option<String>,
+
+    /// The arguments of the function to call.
+    #[arg(allow_negative_numbers = true)]
+    pub args: Vec<String>,
+
+    /// ETH value the Safe should send with the inner call.
+    #[arg(long, value_parser = parse_ether_value)]
+    pub value: Option<alloy_primitives::U256>,
+
+    /// Safe address that should execute the queued transaction.
+    #[arg(long, value_name = "ADDRESS")]
+    pub safe: String,
+
+    #[command(flatten)]
+    pub queue: SafeQueueOpts,
+
+    #[command(flatten)]
+    pub safe_opts: SafeEncoderOpts,
+
+    #[command(flatten)]
+    pub submission: SubmissionOpts,
+}
+
+#[derive(Debug, Parser)]
+pub struct QueueDeploymentArgs {
+    #[command(flatten)]
+    pub deployment: SafeDeploymentOpts,
+
+    #[command(flatten)]
+    pub queue: SafeQueueOpts,
+
+    #[command(flatten)]
+    pub safe_opts: SafeEncoderOpts,
+
+    #[command(flatten)]
+    pub submission: SubmissionOpts,
+}
+
+#[derive(Debug, Parser)]
+pub struct SafeQueueOpts {
+    /// Safe Transaction Service base URL. Defaults are known for common chain IDs.
+    #[arg(long, value_name = "URL")]
+    pub safe_api_url: Option<String>,
+
+    /// Safe nonce to queue. Defaults to the Safe's current on-chain nonce.
+    #[arg(long, value_name = "NONCE")]
+    pub safe_nonce: Option<alloy_primitives::U256>,
+
+    /// Optional origin metadata submitted to the Safe Transaction Service.
+    #[arg(long)]
+    pub origin: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+pub struct SafeDeploymentOpts {
     /// Path to a Foundry broadcast/deployment JSON file, e.g. run-latest.json.
     #[arg(value_hint = ValueHint::FilePath)]
     pub path: PathBuf,
@@ -162,15 +245,6 @@ pub struct ExecuteDeploymentArgs {
     /// MultiSend contract address used when the file contains more than one call.
     #[arg(long, value_name = "ADDRESS", default_value = DEFAULT_SAFE_MULTISEND)]
     pub multi_send: String,
-
-    #[command(flatten)]
-    pub safe_opts: SafeEncoderOpts,
-
-    #[command(flatten)]
-    pub submission: SubmissionOpts,
-
-    #[command(flatten)]
-    pub tx: TransactionOpts,
 }
 
 #[derive(Debug, Parser)]

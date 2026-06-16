@@ -12,6 +12,8 @@ It also supports wrapping calls through a smart-account encoder, currently:
 
 Additional Safe convenience commands include:
 - `ethx safe execute-deployment` — execute CALL transactions from a Foundry broadcast JSON through a Safe
+- `ethx safe queue` — encode one call and queue it in the Safe Transaction Service
+- `ethx safe queue-deployment` — sign and queue Foundry broadcast JSON transactions in the Safe Transaction Service
 
 ## Table of contents
 
@@ -64,6 +66,41 @@ MultiSend call via `DELEGATECALL`. Contract deployment transactions (`CREATE`/`C
 supported by this command.
 
 Use `--multi-send <ADDRESS>` to override the default canonical MultiSend address.
+
+### Queue a call in the Safe API
+
+For multisig Safes, encode a call and queue it offchain instead of broadcasting immediately:
+
+```bash
+ethx safe queue \
+  --rpc-url https://rpc.example \
+  --private-key <OWNER_KEY> \
+  --safe 0xSafe \
+  0xInnerTarget \
+  "transfer(address,uint256)" \
+  0xRecipient \
+  1000000000000000000
+```
+
+Use `--value <VALUE>` to attach ETH value to the inner Safe transaction.
+
+### Queue a Foundry broadcast JSON in the Safe API
+
+For multisig Safes, queue the Safe transaction offchain instead of broadcasting immediately:
+
+```bash
+ethx safe queue-deployment \
+  --rpc-url https://rpc.example \
+  --private-key <OWNER_KEY> \
+  --safe 0xSafe \
+  broadcast/MyScript.s.sol/1/run-latest.json
+```
+
+`ethx` asks the Safe Transaction Service for trusted pending transactions and queues at the next
+available nonce unless `--safe-nonce` is provided. It signs the Safe transaction hash with the local
+owner key and submits the proposal to the Safe Transaction Service. `--safe-api-url <URL>` can
+override the default API URL; defaults are known for common Safe-supported chains such as Ethereum, Sepolia, Optimism, Arbitrum, Base,
+Polygon, Gnosis Chain, BNB Chain, Avalanche, zkSync Era, Linea, Celo, Scroll, Sonic, and Unichain.
 
 ### Send through a Safe
 

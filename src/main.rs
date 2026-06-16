@@ -3,6 +3,7 @@ pub mod foundry_broadcast;
 pub mod multisend;
 mod opts;
 pub mod safe;
+pub mod safe_api;
 
 use crate::{
     call_encoder::{CallEncoder, RawCall},
@@ -17,8 +18,8 @@ use clap::{Parser, Subcommand};
 use ethx_commons::parse_function_args;
 use eyre::{Result, eyre};
 use opts::{
-    EncoderKind, ExecuteDeploymentArgs, SafeEncoderOpts, SafeOperationArg, SafeSubcommands,
-    SendTxArgs,
+    EncoderKind, ExecuteDeploymentArgs, QueueArgs, QueueDeploymentArgs, SafeDeploymentOpts,
+    SafeEncoderOpts, SafeOperationArg, SafeQueueOpts, SafeSubcommands, SendTxArgs,
 };
 use std::time::Duration;
 
@@ -48,6 +49,63 @@ enum Commands {
 enum PreparedCall {
     Call(RawCall),
     Create { code: Bytes },
+}
+
+fn deployment_inner_call(opts: &SafeDeploymentOpts) -> Result<(Address, RawCall, bool)> {
+    let calls = foundry_broadcast::load_calls(&opts.path)?;
+    let safe = opts.safe.parse::<Address>()?;
+    let is_batch = calls.len() > 1;
+    let inner_call = if is_batch {
+        let multi_send = opts.multi_send.parse::<Address>()?;
+        multisend::multisend_call(&calls, multi_send)
+    } else {
+        calls
+            .into_iter()
+            .next()
+            .expect("non-empty calls checked by parser")
+    };
+    Ok((safe, inner_call, is_batch))
+}
+
+async fn queue_safe_call<P, S>(
+    safe: Address,
+    inner_call: &RawCall,
+    safe_context: &SafeCallContext,
+    queue_opts: &SafeQueueOpts,
+    signer: &S,
+    signer_address: Address,
+    provider: &P,
+) -> Result<()>
+where
+    P: Provider<AnyNetwork>,
+    S: Signer + Sync,
+{
+    let chain_id = provider.get_chain_id().await?;
+    let safe_api_url =
+        safe_api::resolve_safe_api_url(queue_opts.safe_api_url.as_deref(), chain_id)?;
+    let encoder = SafeCallEncoder::new(safe);
+    let mut draft = encoder
+        .prepare_transaction_draft(inner_call, safe_context, queue_opts.safe_nonce, provider)
+        .await?;
+    if queue_opts.safe_nonce.is_none() {
+        let nonce = safe_api::next_available_nonce(&safe_api_url, safe, draft.nonce).await?;
+        if nonce != draft.nonce {
+            draft = encoder
+                .prepare_transaction_draft(inner_call, safe_context, Some(nonce), provider)
+                .await?;
+        }
+    }
+    let signature = encoder.sign_transaction_draft(&draft, signer).await?;
+
+    safe_api::propose_transaction(
+        &safe_api_url,
+        safe,
+        signer_address,
+        &draft,
+        &signature,
+        queue_opts.origin.as_deref(),
+    )
+    .await
 }
 
 fn safe_call_context_from_opts(opts: &SafeEncoderOpts) -> Result<SafeCallContext> {
@@ -402,18 +460,7 @@ impl ExecuteDeploymentArgs {
             ));
         }
 
-        let calls = foundry_broadcast::load_calls(&self.path)?;
-        let safe = self.safe.parse::<Address>()?;
-        let is_batch = calls.len() > 1;
-        let inner_call = if is_batch {
-            let multi_send = self.multi_send.parse::<Address>()?;
-            multisend::multisend_call(&calls, multi_send)
-        } else {
-            calls
-                .into_iter()
-                .next()
-                .expect("non-empty calls checked above")
-        };
+        let (safe, inner_call, is_batch) = deployment_inner_call(&self.deployment)?;
 
         let mut safe_context = safe_call_context_from_opts(&self.safe_opts)?;
         safe_context.operation = if is_batch {
@@ -505,6 +552,123 @@ impl ExecuteDeploymentArgs {
     }
 }
 
+impl QueueArgs {
+    async fn run(self) -> Result<()> {
+        let rpc = self
+            .submission
+            .eth
+            .rpc
+            .url
+            .as_deref()
+            .unwrap_or("http://localhost:8545");
+        let provider = builder::<AnyNetwork>().connect_http(rpc.parse()?);
+        if let Some(interval) = self.submission.poll_interval {
+            provider
+                .client()
+                .set_poll_interval(Duration::from_secs(interval));
+        }
+
+        let signer = self.submission.eth.wallet.signer().await?;
+        let signer_address = signer.address();
+        if let Some(specified_from) = self.submission.eth.wallet.from
+            && specified_from != signer_address
+        {
+            return Err(eyre!(
+                "The specified sender via --from does not match the resolved signer address"
+            ));
+        }
+
+        let ens_chain = self
+            .submission
+            .eth
+            .etherscan
+            .chain
+            .unwrap_or(Chain::mainnet());
+        let to = self.to.parse::<Address>()?;
+        let data = if let Some(sig) = &self.sig {
+            Bytes::from(
+                parse_function_args(
+                    sig,
+                    self.args.clone(),
+                    Some(to),
+                    ens_chain,
+                    &provider,
+                    self.submission.eth.etherscan.key.as_deref(),
+                )
+                .await?
+                .0,
+            )
+        } else {
+            Bytes::new()
+        };
+        let inner_call = RawCall {
+            to,
+            value: self.value.unwrap_or(U256::ZERO),
+            data,
+        };
+        let safe = self.safe.parse::<Address>()?;
+        let safe_context = safe_call_context_from_opts(&self.safe_opts)?;
+
+        queue_safe_call(
+            safe,
+            &inner_call,
+            &safe_context,
+            &self.queue,
+            &signer,
+            signer_address,
+            &provider,
+        )
+        .await
+    }
+}
+
+impl QueueDeploymentArgs {
+    async fn run(self) -> Result<()> {
+        let rpc = self
+            .submission
+            .eth
+            .rpc
+            .url
+            .as_deref()
+            .unwrap_or("http://localhost:8545");
+        let provider = builder::<AnyNetwork>().connect_http(rpc.parse()?);
+        if let Some(interval) = self.submission.poll_interval {
+            provider
+                .client()
+                .set_poll_interval(Duration::from_secs(interval));
+        }
+
+        let signer = self.submission.eth.wallet.signer().await?;
+        let signer_address = signer.address();
+        if let Some(specified_from) = self.submission.eth.wallet.from
+            && specified_from != signer_address
+        {
+            return Err(eyre!(
+                "The specified sender via --from does not match the resolved signer address"
+            ));
+        }
+
+        let (safe, inner_call, is_batch) = deployment_inner_call(&self.deployment)?;
+        let mut safe_context = safe_call_context_from_opts(&self.safe_opts)?;
+        safe_context.operation = if is_batch {
+            SafeOperation::DelegateCall
+        } else {
+            SafeOperation::Call
+        };
+
+        queue_safe_call(
+            safe,
+            &inner_call,
+            &safe_context,
+            &self.queue,
+            &signer,
+            signer_address,
+            &provider,
+        )
+        .await
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -513,6 +677,8 @@ async fn main() -> Result<()> {
         Commands::Send(args) => args.run().await,
         Commands::Safe { command } => match command {
             SafeSubcommands::ExecuteDeployment(args) => args.run().await,
+            SafeSubcommands::Queue(args) => args.run().await,
+            SafeSubcommands::QueueDeployment(args) => args.run().await,
         },
     }
 }

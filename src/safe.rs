@@ -113,6 +113,35 @@ pub struct SafeCallContext {
     pub encoded_signatures: Bytes,
 }
 
+/// A Safe transaction prepared for offchain proposal/signing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SafeTxDraft {
+    version: SafeHashVersion,
+    chain_id: u64,
+    /// Destination of the Safe transaction.
+    pub to: Address,
+    /// ETH value sent by the Safe transaction.
+    pub value: U256,
+    /// Calldata executed by the Safe transaction.
+    pub data: Bytes,
+    /// Safe operation used by the transaction.
+    pub operation: SafeOperation,
+    /// Gas limit forwarded to the Safe transaction.
+    pub safe_tx_gas: U256,
+    /// Base gas used by the Safe refund logic.
+    pub base_gas: U256,
+    /// Gas price used by the Safe refund logic.
+    pub gas_price: U256,
+    /// Token used for refunds. Zero address means native ETH semantics in Safe.
+    pub gas_token: Address,
+    /// Receiver of gas refunds. Zero address keeps Safe default behavior.
+    pub refund_receiver: Address,
+    /// Safe nonce used to derive the transaction hash.
+    pub nonce: U256,
+    /// Safe transaction hash to sign and submit to the Safe Transaction Service.
+    pub safe_tx_hash: B256,
+}
+
 /// Safe-specific validation and preparation errors.
 #[derive(Debug, Error)]
 pub enum SafeEncodeError {
@@ -382,6 +411,62 @@ impl SafeCallEncoder {
             }
         }
         Ok(())
+    }
+
+    /// Builds a Safe transaction draft and derives the Safe transaction hash for offchain signing.
+    pub async fn prepare_transaction_draft<P: Provider<AnyNetwork>>(
+        &self,
+        call: &RawCall,
+        context: &SafeCallContext,
+        safe_nonce: Option<U256>,
+        provider: &P,
+    ) -> eyre::Result<SafeTxDraft> {
+        let (version, current_nonce, _, _) = self.load_metadata(provider).await?;
+        let nonce = safe_nonce.unwrap_or(current_nonce);
+        let chain_id = provider.get_chain_id().await?;
+        let safe_tx_hash = self.safe_tx_hash(version, chain_id, call, context, nonce);
+
+        Ok(SafeTxDraft {
+            version,
+            chain_id,
+            to: call.to,
+            value: call.value,
+            data: call.data.clone(),
+            operation: context.operation,
+            safe_tx_gas: context.safe_tx_gas,
+            base_gas: context.base_gas,
+            gas_price: context.gas_price,
+            gas_token: context.gas_token,
+            refund_receiver: context.refund_receiver,
+            nonce,
+            safe_tx_hash,
+        })
+    }
+
+    /// Signs a prepared Safe transaction draft using EIP-712 typed data.
+    ///
+    /// This works with hardware signers such as Ledger that intentionally do not expose raw
+    /// `sign_hash` support.
+    pub async fn sign_transaction_draft<S: Signer + Sync>(
+        &self,
+        draft: &SafeTxDraft,
+        signer: &S,
+    ) -> eyre::Result<Signature> {
+        let safe_tx = SafeTx {
+            to: draft.to,
+            value: draft.value,
+            data: draft.data.clone(),
+            operation: draft.operation.into(),
+            safeTxGas: draft.safe_tx_gas,
+            baseGas: draft.base_gas,
+            gasPrice: draft.gas_price,
+            gasToken: draft.gas_token,
+            refundReceiver: draft.refund_receiver,
+            nonce: draft.nonce,
+        };
+        Ok(signer
+            .sign_typed_data(&safe_tx, &draft.version.domain(self.safe, draft.chain_id))
+            .await?)
     }
 
     /// Resolves the Safe transaction hash for the provided call/context and sorts signature inputs
