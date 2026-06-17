@@ -216,6 +216,15 @@ cargo build
 
 ## Run
 
+With Nix flakes:
+
+```bash
+nix run . -- --help
+nix run . -- send --help
+```
+
+With Cargo:
+
 ```bash
 cargo run -- --help
 cargo run -- send --help
